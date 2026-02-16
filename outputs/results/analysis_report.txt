@@ -1,0 +1,66 @@
+============================================================
+DATASET ANALYSIS REPORT
+============================================================
+
+Total images analyzed: 100
+
+------------------------------------------------------------
+STRUCTURAL STATISTICS
+------------------------------------------------------------
+
+        num_nodes   num_edges  num_components  graph_density
+count  100.000000  100.000000      100.000000     100.000000
+mean    20.480000  151.820000      713.400000       8.724600
+std     17.699786   98.567249      651.422996      34.677224
+min      0.000000    8.000000       52.000000       0.000000
+25%      8.000000   73.000000      260.500000       0.235693
+50%     16.000000  137.500000      510.000000       0.656770
+75%     29.000000  215.500000     1006.250000       1.878968
+max     91.000000  508.000000     4124.000000     260.000000
+
+------------------------------------------------------------
+GRAPH TYPES DISTRIBUTION
+------------------------------------------------------------
+
+  dense          :  61 ( 61.0%)
+  network        :  18 ( 18.0%)
+  sparse         :  13 ( 13.0%)
+  empty          :   8 (  8.0%)
+
+------------------------------------------------------------
+COMPLEXITY DISTRIBUTION
+------------------------------------------------------------
+
+  complex        :  97 ( 97.0%)
+  moderate       :   2 (  2.0%)
+  simple         :   1 (  1.0%)
+
+------------------------------------------------------------
+SAMPLE ENRICHED CAPTIONS
+------------------------------------------------------------
+
+Sample 1:
+  Original: Multiple Intelligences, Circular Diagram, elements: Circle divided into eight segments, each labeled...
+  Type: dense
+  Complexity: complex
+
+Sample 2:
+  Original: Big Five Personality Traits, Grid Diagram, elements: Five rows, each representing a personality trai...
+  Type: dense
+  Complexity: complex
+
+Sample 3:
+  Original: Constructivism in Learning, Infographic, elements: Top section with title and description of constru...
+  Type: network
+  Complexity: complex
+
+Sample 4:
+  Original: Steps in the Scrum Iterative Process, Circular Flow Diagram, elements: Five steps arranged in a circ...
+  Type: network
+  Complexity: complex
+
+Sample 5:
+  Original: Iterative Product Development, Circular Flow Diagram, elements: A circular design with seven numbere...
+  Type: network
+  Complexity: complex
+
