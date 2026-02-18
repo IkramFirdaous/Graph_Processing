@@ -1,25 +1,31 @@
 """
 Adaptive Feature Extractor - Adapte l'extraction selon le type d'image
 
-Utilise des stratégies différentes selon le type de diagramme détecté
+Utilise des strategies differentes selon le type de diagramme detecte.
+Integre classification heuristique + classificateur appris (Random Forest),
+segmentation couleur (K-means LAB), et descripteurs visuels (HOG, LBP, ORB).
 """
 
 import numpy as np
 import cv2
-from typing import Dict, Any
-from dataclasses import dataclass
+from typing import Dict, Any, Optional
+from dataclasses import dataclass, field
 
 try:
     from .image_classifier import classify_image_type, DiagramType
     from .detection import GraphPrimitiveDetector
+    from .feature_descriptors import FeatureDescriptorExtractor, FeatureVector
+    from .learned_classifier import LearnedClassifier
 except ImportError:
     from image_classifier import classify_image_type, DiagramType
     from detection import GraphPrimitiveDetector
+    from feature_descriptors import FeatureDescriptorExtractor, FeatureVector
+    from learned_classifier import LearnedClassifier
 
 
 @dataclass
 class AdaptiveFeatures:
-    """Features extraites de manière adaptative"""
+    """Features extraites de maniere adaptative"""
     # Type classification
     diagram_type: str
     type_confidence: float
@@ -36,20 +42,39 @@ class AdaptiveFeatures:
     # Enriched description
     description_enrichment: str
 
+    # Color segmentation features (K-means LAB)
+    color_features: Optional[Dict[str, Any]] = None
+
+    # Feature descriptors (HOG, LBP, ORB)
+    feature_vector: Optional[FeatureVector] = None
+
+    # Learned classifier results
+    learned_type: Optional[str] = None
+    learned_confidence: Optional[float] = None
+
 
 class AdaptiveFeatureExtractor:
     """
     Extracteur de features adaptatif
 
-    Méthode:
-    1. Classifie le type d'image
-    2. Sélectionne la stratégie d'extraction appropriée
-    3. Extrait features spécifiques au type
-    4. Génère description enrichie
+    Pipeline ameliore :
+    1. Segmentation couleur K-means sur image RGB originale
+    2. Classification heuristique (Hough, contours) sur grayscale
+    3. Classification apprise (Random Forest) si modele disponible
+    4. Extraction de descripteurs visuels (HOG, LBP, ORB)
+    5. Extraction de features specifiques au type
+    6. Generation de description enrichie
     """
 
-    def __init__(self):
+    def __init__(self, use_learned_classifier: bool = True):
         self.detector = GraphPrimitiveDetector()
+        self.feature_extractor = FeatureDescriptorExtractor()
+        self.learned_classifier = None
+
+        if use_learned_classifier:
+            self.learned_classifier = LearnedClassifier()
+            if not self.learned_classifier.load():
+                self.learned_classifier = None
 
 
     def extract(self, img: np.ndarray, img_original: np.ndarray = None) -> AdaptiveFeatures:
@@ -63,35 +88,128 @@ class AdaptiveFeatureExtractor:
         Returns:
             AdaptiveFeatures
         """
-        # Step 1: Classify image type
+        # Step 1: Color segmentation on original RGB
+        color_features = None
+        if img_original is not None and img_original.ndim == 3:
+            color_features = self._extract_color_features(img_original)
+
+        # Step 2: Heuristic classification (always run for structural info)
         type_info = classify_image_type(img)
 
-        # Step 2: Extract universal features
+        # Step 3: Learned classification (if model available)
+        learned_type = None
+        learned_confidence = None
+        if self.learned_classifier is not None:
+            learned_type, learned_confidence = self.learned_classifier.predict(
+                img, color_features=color_features
+            )
+
+        # Use learned type if confident, else heuristic
+        if learned_type and learned_confidence and learned_confidence > 0.6:
+            active_type_value = learned_type
+            active_confidence = learned_confidence
+        else:
+            active_type_value = type_info.diagram_type.value
+            active_confidence = type_info.confidence
+
+        # Step 4: Extract universal features
         visual_complexity = self._compute_visual_complexity(img)
         color_entropy = self._compute_color_entropy(img_original if img_original is not None else img)
         text_density = type_info.text_density
         layout = self._determine_layout(type_info)
 
-        # Step 3: Extract type-specific features
+        # Step 5: Feature descriptors (HOG + LBP + ORB)
+        geometric_features = {
+            'num_circles': type_info.num_circles,
+            'num_rectangles': type_info.num_rectangles,
+            'num_lines': type_info.num_lines,
+            'edge_density': type_info.edge_density,
+            'text_density': text_density,
+            'color_diversity': type_info.color_diversity,
+        }
+        feature_vector = self.feature_extractor.extract_all(
+            img,
+            color_features=color_features,
+            geometric_features=geometric_features
+        )
+
+        # Step 6: Type-specific features
         specific_features = self._extract_type_specific(img, type_info)
 
-        # Step 4: Generate enriched description
+        # Step 7: Enriched description
         enrichment = self._generate_enrichment(type_info, specific_features)
 
         return AdaptiveFeatures(
-            diagram_type=type_info.diagram_type.value,
-            type_confidence=type_info.confidence,
+            diagram_type=active_type_value,
+            type_confidence=active_confidence,
             visual_complexity=visual_complexity,
             color_entropy=color_entropy,
             text_density=text_density,
             spatial_layout=layout,
             specific_features=specific_features,
-            description_enrichment=enrichment
+            description_enrichment=enrichment,
+            color_features=color_features,
+            feature_vector=feature_vector,
+            learned_type=learned_type,
+            learned_confidence=learned_confidence,
         )
 
 
+    def _extract_color_features(self, img_rgb: np.ndarray, k: int = 5) -> Dict[str, Any]:
+        """
+        Segmentation couleur par K-means en espace LAB
+
+        Concepts CV (Theme 5 - Segmentation) :
+        - Conversion RGB -> LAB pour uniformite perceptuelle
+        - K-means clustering dans l'espace couleur
+        - Analyse de la distribution des segments
+
+        Args:
+            img_rgb: Image RGB originale
+            k: Nombre de clusters couleur
+
+        Returns:
+            Dict avec features couleur
+        """
+        # Conversion en espace LAB (perceptuellement uniforme)
+        img_lab = cv2.cvtColor(img_rgb, cv2.COLOR_RGB2LAB)
+
+        # Reshape pour K-means : (N, 3) float32
+        pixels = img_lab.reshape(-1, 3).astype(np.float32)
+
+        # K-means clustering
+        criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 20, 1.0)
+        compactness, labels, centers = cv2.kmeans(
+            pixels, k, None, criteria, 3, cv2.KMEANS_PP_CENTERS
+        )
+
+        # Tailles des segments
+        labels_flat = labels.flatten()
+        total_pixels = len(labels_flat)
+        segment_sizes = []
+        for i in range(k):
+            count = int(np.sum(labels_flat == i))
+            segment_sizes.append(count / total_pixels)
+
+        segment_sizes.sort(reverse=True)
+
+        # Nombre de couleurs "dominantes" (> 5% de l'image)
+        num_dominant = sum(1 for s in segment_sizes if s > 0.05)
+
+        # Balance couleur (std faible = equilibre)
+        color_balance = float(1.0 - np.std(segment_sizes))
+
+        return {
+            'num_dominant_colors': num_dominant,
+            'largest_segment_ratio': float(segment_sizes[0]),
+            'color_balance': color_balance,
+            'compactness': float(compactness),
+            'segment_2_ratio': float(segment_sizes[1]) if len(segment_sizes) > 1 else 0.0,
+        }
+
+
     def _compute_visual_complexity(self, img: np.ndarray) -> float:
-        """Complexité visuelle (0-1) basée sur entropie et contours"""
+        """Complexite visuelle (0-1) basee sur entropie et contours"""
         # Edge density
         edges = cv2.Canny(img, 50, 150)
         edge_ratio = np.sum(edges > 0) / edges.size
@@ -105,7 +223,7 @@ class AdaptiveFeatureExtractor:
 
 
     def _compute_color_entropy(self, img: np.ndarray) -> float:
-        """Entropie de couleur (diversité)"""
+        """Entropie de couleur (diversite)"""
         if len(img.shape) == 2:
             # Grayscale
             hist = cv2.calcHist([img], [0], None, [256], [0, 256])
@@ -123,7 +241,7 @@ class AdaptiveFeatureExtractor:
 
 
     def _determine_layout(self, type_info) -> str:
-        """Détermine le layout spatial"""
+        """Determine le layout spatial"""
         if type_info.has_radial_symmetry:
             return "radial"
         elif type_info.has_grid_layout:
@@ -137,7 +255,7 @@ class AdaptiveFeatureExtractor:
 
 
     def _extract_type_specific(self, img: np.ndarray, type_info) -> Dict[str, Any]:
-        """Extrait features spécifiques au type d'image"""
+        """Extrait features specifiques au type d'image"""
 
         dtype = type_info.diagram_type
 
@@ -165,7 +283,7 @@ class AdaptiveFeatureExtractor:
 
 
     def _extract_network_graph_features(self, img: np.ndarray, type_info) -> Dict[str, Any]:
-        """Features pour graphes de réseau"""
+        """Features pour graphes de reseau"""
         return {
             "num_nodes": type_info.num_circles + type_info.num_rectangles,
             "num_edges": type_info.num_lines,
@@ -224,7 +342,7 @@ class AdaptiveFeatureExtractor:
 
 
     def _extract_tree_features(self, img: np.ndarray, type_info) -> Dict[str, Any]:
-        """Features pour arbres hiérarchiques"""
+        """Features pour arbres hierarchiques"""
         return {
             "num_nodes": type_info.num_rectangles + type_info.num_circles,
             "tree_depth": self._estimate_hierarchy_depth(type_info),
@@ -234,7 +352,7 @@ class AdaptiveFeatureExtractor:
 
 
     def _extract_generic_features(self, img: np.ndarray, type_info) -> Dict[str, Any]:
-        """Features génériques pour types inconnus"""
+        """Features generiques pour types inconnus"""
         return {
             "num_shapes": type_info.num_circles + type_info.num_rectangles,
             "num_lines": type_info.num_lines,
@@ -246,7 +364,7 @@ class AdaptiveFeatureExtractor:
     # Helper methods
 
     def _compute_graph_density(self, num_nodes: int, num_edges: int) -> float:
-        """Densité d'un graphe"""
+        """Densite d'un graphe"""
         if num_nodes < 2:
             return 0.0
         max_edges = num_nodes * (num_nodes - 1) / 2
@@ -254,7 +372,7 @@ class AdaptiveFeatureExtractor:
 
 
     def _estimate_avg_degree(self, num_nodes: int, num_edges: int) -> float:
-        """Degré moyen dans un graphe"""
+        """Degre moyen dans un graphe"""
         if num_nodes == 0:
             return 0.0
         return (2 * num_edges) / num_nodes
@@ -262,22 +380,19 @@ class AdaptiveFeatureExtractor:
 
     def _estimate_pie_segments(self, img: np.ndarray) -> int:
         """Estime le nombre de segments dans un pie chart"""
-        # Detect lines radiating from center
         edges = cv2.Canny(img, 50, 150)
         lines = cv2.HoughLines(edges, 1, np.pi/180, 50)
 
         if lines is not None:
-            # Count distinct angles
             angles = [line[0][1] for line in lines]
             unique_angles = len(set([int(a * 180 / np.pi) // 10 for a in angles]))
             return max(2, unique_angles)
 
-        return 2  # Default minimum
+        return 2
 
 
     def _estimate_hierarchy_depth(self, type_info) -> int:
-        """Estime la profondeur d'une hiérarchie"""
-        # Simple heuristic based on number of elements
+        """Estime la profondeur d'une hierarchie"""
         total_elements = type_info.num_rectangles + type_info.num_circles
 
         if total_elements < 3:
@@ -292,26 +407,23 @@ class AdaptiveFeatureExtractor:
 
     def _estimate_sections(self, img: np.ndarray) -> int:
         """Estime le nombre de sections dans une infographie"""
-        # Detect horizontal dividing lines
         h, w = img.shape[:2]
         horizontal_profile = np.sum(img < 128, axis=1)
 
-        # Find valleys (section separators)
         threshold = 0.1 * w
         sections = 1
 
         for i in range(10, h - 10):
             if horizontal_profile[i] > threshold:
-                # Check if local maximum
                 if (horizontal_profile[i] > horizontal_profile[i-5] and
                     horizontal_profile[i] > horizontal_profile[i+5]):
                     sections += 1
 
-        return min(sections, 10)  # Cap at 10
+        return min(sections, 10)
 
 
     def _detect_bar_orientation(self, img: np.ndarray) -> str:
-        """Détecte l'orientation des barres (vertical/horizontal)"""
+        """Detecte l'orientation des barres (vertical/horizontal)"""
         edges = cv2.Canny(img, 50, 150)
         lines = cv2.HoughLinesP(edges, 1, np.pi/180, 50, minLineLength=30, maxLineGap=10)
 
@@ -344,7 +456,7 @@ class AdaptiveFeatureExtractor:
 
 
     def _generate_enrichment(self, type_info, specific_features: Dict) -> str:
-        """Génère une description enrichie textuelle"""
+        """Genere une description enrichie textuelle"""
 
         dtype = type_info.diagram_type
 
@@ -379,16 +491,18 @@ class AdaptiveFeatureExtractor:
                    f"dominant feature: {specific_features.get('dominant_feature', 'unknown')}")
 
 
-def extract_adaptive_features(img: np.ndarray, img_original: np.ndarray = None) -> AdaptiveFeatures:
+def extract_adaptive_features(img: np.ndarray, img_original: np.ndarray = None,
+                               use_learned_classifier: bool = True) -> AdaptiveFeatures:
     """
     Fonction utilitaire pour extraction adaptative
 
     Args:
         img: Image preprocessed (grayscale)
         img_original: Image originale (couleur)
+        use_learned_classifier: Utiliser le classificateur appris si disponible
 
     Returns:
         AdaptiveFeatures
     """
-    extractor = AdaptiveFeatureExtractor()
+    extractor = AdaptiveFeatureExtractor(use_learned_classifier=use_learned_classifier)
     return extractor.extract(img, img_original)

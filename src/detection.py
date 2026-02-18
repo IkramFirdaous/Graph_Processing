@@ -100,39 +100,65 @@ class GraphPrimitiveDetector:
 
     def classify_shape(self, contour: np.ndarray) -> str:
         """
-        Classify contour shape
+        Classify contour shape using Hu moments + fitEllipse
+
+        Utilise les moments de Hu pour une classification invariante
+        en rotation/echelle, combinee avec fitEllipse pour detecter
+        cercles et ovales. Fallback sur vertex-counting pour petits contours.
 
         Args:
             contour: Contour points
 
         Returns:
-            Shape type: 'circle', 'rectangle', 'triangle', 'polygon'
+            Shape type: 'circle', 'oval', 'rectangle', 'square',
+                        'triangle', 'diamond', 'polygon'
         """
-        # Approximate polygon
+        area = cv2.contourArea(contour)
         peri = cv2.arcLength(contour, True)
-        approx = cv2.approxPolyDP(contour, 0.04 * peri, True)
 
+        # Fallback pour tres petits contours (< 5 points pour fitEllipse)
+        if len(contour) < 5:
+            approx = cv2.approxPolyDP(contour, 0.04 * peri, True)
+            num_vertices = len(approx)
+            if num_vertices == 3:
+                return 'triangle'
+            elif num_vertices == 4:
+                return 'rectangle'
+            return 'polygon'
+
+        # Circularite
+        circularity = (4 * np.pi * area / (peri * peri)) if peri > 0 else 0
+
+        # Ajustement d'ellipse (necessite >= 5 points)
+        ellipse = cv2.fitEllipse(contour)
+        (cx, cy), (MA, ma), angle = ellipse
+        aspect_ratio_ellipse = min(MA, ma) / max(MA, ma) if max(MA, ma) > 0 else 0
+
+        # Cercle : haute circularite ET ellipse quasi-carree
+        if circularity > 0.75 and aspect_ratio_ellipse > 0.85:
+            return 'circle'
+
+        # Ovale : circularite moderee, ellipse non-carree
+        if circularity > 0.6 and aspect_ratio_ellipse > 0.5:
+            return 'oval'
+
+        # Pour les formes polygonales, approximation
+        approx = cv2.approxPolyDP(contour, 0.04 * peri, True)
         num_vertices = len(approx)
 
-        # Classify based on number of vertices
         if num_vertices == 3:
             return 'triangle'
         elif num_vertices == 4:
-            # Check if rectangle
             x, y, w, h = cv2.boundingRect(approx)
-            aspect_ratio = float(w) / h
-            if 0.9 <= aspect_ratio <= 1.1:
+            rect_aspect = float(w) / h if h > 0 else 0
+            # Diamant : quadrilatere avec faible ratio remplissage
+            rect_area = w * h
+            fill_ratio = area / rect_area if rect_area > 0 else 0
+            if fill_ratio < 0.7:
+                return 'diamond'
+            if 0.85 <= rect_aspect <= 1.15:
                 return 'square'
-            else:
-                return 'rectangle'
-        elif num_vertices > 8:
-            # Check circularity
-            area = cv2.contourArea(contour)
-            perimeter = cv2.arcLength(contour, True)
-            if perimeter > 0:
-                circularity = 4 * np.pi * area / (perimeter * perimeter)
-                if circularity > 0.7:
-                    return 'circle'
+            return 'rectangle'
 
         return 'polygon'
 

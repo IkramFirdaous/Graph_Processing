@@ -1,11 +1,5 @@
 """
-Module 5.1: Preprocessing - Image Formation / Traitement de l'image
-
-Concepts from CV course:
-- Image formation
-- Spatial filtering
-- Noise reduction
-- Contrast enhancement
+Module: Preprocessing - Image Formation / Traitement de l'image
 
 This module normalizes images for downstream processing
 """
@@ -192,12 +186,67 @@ class ImagePreprocessor:
         else:
             return img
 
+    def morphological_cleanup(self, img: np.ndarray,
+                              remove_noise: bool = True,
+                              reconnect_lines: bool = True,
+                              extract_text: bool = False,
+                              extract_lines: bool = False) -> Dict[str, np.ndarray]:
+        """
+        Nettoyage morphologique de l'image
+
+        Operations morphologiques pour ameliorer la qualite de l'image binaire :
+        - Opening (erosion + dilation) : supprime le bruit (petits artefacts)
+        - Closing (dilation + erosion) : reconnecte les lignes cassees
+        - Top-hat : extrait les structures fines (texte)
+        - Noyaux directionnels : extrait lignes horizontales/verticales
+
+        Args:
+            img: Image binaire ou grayscale
+            remove_noise: Appliquer opening (supprime petits artefacts)
+            reconnect_lines: Appliquer closing (reconnecte lignes cassees)
+            extract_text: Appliquer top-hat pour extraction de texte
+            extract_lines: Appliquer noyaux directionnels pour lignes H/V
+
+        Returns:
+            Dict avec resultats intermediaires et 'cleaned' final
+        """
+        results = {}
+        current = img.copy()
+
+        if remove_noise:
+            kernel_open = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+            current = cv2.morphologyEx(current, cv2.MORPH_OPEN, kernel_open)
+            results['opened'] = current.copy()
+
+        if reconnect_lines:
+            kernel_close = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+            current = cv2.morphologyEx(current, cv2.MORPH_CLOSE, kernel_close)
+            results['closed'] = current.copy()
+
+        if extract_text:
+            kernel_tophat = cv2.getStructuringElement(cv2.MORPH_RECT, (15, 15))
+            tophat = cv2.morphologyEx(img, cv2.MORPH_TOPHAT, kernel_tophat)
+            results['tophat_text'] = tophat
+
+        if extract_lines:
+            kernel_h = cv2.getStructuringElement(cv2.MORPH_RECT, (25, 1))
+            horizontal = cv2.morphologyEx(img, cv2.MORPH_OPEN, kernel_h)
+            results['horizontal_lines'] = horizontal
+
+            kernel_v = cv2.getStructuringElement(cv2.MORPH_RECT, (1, 25))
+            vertical = cv2.morphologyEx(img, cv2.MORPH_OPEN, kernel_v)
+            results['vertical_lines'] = vertical
+
+        results['cleaned'] = current
+        return results
+
     def preprocess(self,
                    img: np.ndarray,
                    grayscale: bool = False,
                    denoise_method: Optional[str] = 'bilateral',
                    enhance_contrast_method: Optional[str] = None,
-                   binarize_method: Optional[str] = None) -> Dict[str, np.ndarray]:
+                   binarize_method: Optional[str] = None,
+                   morphological: bool = False) -> Dict[str, np.ndarray]:
         """
         Full preprocessing pipeline
 
@@ -207,6 +256,7 @@ class ImagePreprocessor:
             denoise_method: Denoising method or None
             enhance_contrast_method: Contrast enhancement or None
             binarize_method: Binarization method or None
+            morphological: Apply morphological cleanup after binarization
 
         Returns:
             Dictionary with:
@@ -242,6 +292,12 @@ class ImagePreprocessor:
         if binarize_method:
             current = self.binarize(current, method=binarize_method)
             results['binary'] = current
+
+        # Step 6: Morphological cleanup
+        if morphological:
+            morph_results = self.morphological_cleanup(current)
+            results['morphological'] = morph_results
+            current = morph_results['cleaned']
 
         results['processed'] = current
 

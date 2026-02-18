@@ -1,9 +1,12 @@
 """
-Process Full Dataset - Adaptive Extraction
+Process Full Dataset - Adaptive Extraction v2
 
-Applique l'extraction adaptative à tout le dataset
-Génère le même format CSV que demo_adaptive_extraction.py
+Applique l'extraction adaptative amelioree a tout le dataset.
+Inclut: segmentation couleur, descripteurs visuels, nettoyage morphologique.
 """
+
+import warnings
+warnings.filterwarnings("ignore", category=UserWarning, module="sklearn")
 
 import pandas as pd
 import numpy as np
@@ -13,22 +16,28 @@ import time
 
 from src.utils import load_image_from_data, pil_to_numpy
 from src.preprocessing import ImagePreprocessor
-from src.adaptive_extractor import extract_adaptive_features
+from src.adaptive_extractor import AdaptiveFeatureExtractor
 
 
 def process_full_dataset(batch_size=100, save_every=500, start_from=0):
     """
-    Traite tout le dataset avec extraction adaptative
+    Traite tout le dataset avec extraction adaptative v2
 
     Args:
         batch_size: Taille des batches pour la progression
-        save_every: Sauvegarde intermédiaire tous les N images
-        start_from: Index de départ (pour reprendre après interruption)
+        save_every: Sauvegarde intermediaire tous les N images
+        start_from: Index de depart (pour reprendre apres interruption)
     """
 
     print("=" * 80)
-    print("TRAITEMENT COMPLET DU DATASET - EXTRACTION ADAPTATIVE")
+    print("TRAITEMENT COMPLET DU DATASET - EXTRACTION ADAPTATIVE v2")
     print("=" * 80)
+    print("\nPipeline ameliore:")
+    print("  + Nettoyage morphologique (Theme 3)")
+    print("  + Segmentation couleur K-means LAB (Theme 5)")
+    print("  + Descripteurs HOG/LBP/ORB (Theme 4)")
+    print("  + Classification Hu moments (Theme 2)")
+    print("  + Random Forest si modele disponible (Theme 6)")
 
     # Create output directories
     Path("outputs/results").mkdir(parents=True, exist_ok=True)
@@ -36,7 +45,7 @@ def process_full_dataset(batch_size=100, save_every=500, start_from=0):
     # Load dataset
     print("\n[1/4] Chargement du dataset...")
     df = pd.read_parquet("hf://datasets/JasmineQiuqiu/diagrams_with_captions/data/train-00000-of-00001.parquet")
-    print(f"Dataset chargé: {len(df)} images")
+    print(f"Dataset charge: {len(df)} images")
 
     # Find columns
     image_col = [c for c in df.columns if 'image' in c.lower()][0]
@@ -45,8 +54,9 @@ def process_full_dataset(batch_size=100, save_every=500, start_from=0):
 
     print(f"Colonnes: image='{image_col}', caption='{caption_col}'")
 
-    # Initialize preprocessor
+    # Initialize preprocessor and extractor
     preprocessor = ImagePreprocessor(target_size=(800, 800))
+    extractor = AdaptiveFeatureExtractor(use_learned_classifier=True)
 
     # Results storage
     results = []
@@ -60,13 +70,13 @@ def process_full_dataset(batch_size=100, save_every=500, start_from=0):
         print(f"\n[2/4] Reprise depuis l'index {start_from}...")
         existing_df = pd.read_csv(temp_path)
         results = existing_df.to_dict('records')
-        print(f"Chargé {len(results)} résultats existants")
+        print(f"Charge {len(results)} resultats existants")
     else:
-        print(f"\n[2/4] Démarrage du traitement...")
+        print(f"\n[2/4] Demarrage du traitement...")
 
     # Process images
     print(f"\n[3/4] Traitement de {len(df)} images (depuis index {start_from})...")
-    print(f"Sauvegarde intermédiaire tous les {save_every} images")
+    print(f"Sauvegarde intermediaire tous les {save_every} images")
 
     total_processed = start_from
     start_time = time.time()
@@ -83,12 +93,16 @@ def process_full_dataset(batch_size=100, save_every=500, start_from=0):
 
                 img_original = pil_to_numpy(img_pil)
 
-                # Preprocess
-                prep = preprocessor.preprocess(img_original, grayscale=True, enhance_contrast_method='clahe')
+                # Preprocess (with morphological cleanup)
+                prep = preprocessor.preprocess(
+                    img_original, grayscale=True,
+                    enhance_contrast_method='clahe',
+                    morphological=True
+                )
                 img_processed = prep['processed']
 
-                # ADAPTIVE EXTRACTION
-                features = extract_adaptive_features(img_processed, img_original)
+                # ADAPTIVE EXTRACTION v2
+                features = extractor.extract(img_processed, img_original)
 
                 # Build result dict
                 result_dict = {
@@ -105,6 +119,23 @@ def process_full_dataset(batch_size=100, save_every=500, start_from=0):
                 # Add specific features with prefix
                 for key, value in features.specific_features.items():
                     result_dict[f'specific_{key}'] = value
+
+                # Add color features
+                if features.color_features:
+                    for key, value in features.color_features.items():
+                        result_dict[f'color_{key}'] = value
+
+                # Add descriptor stats
+                if features.feature_vector:
+                    fv = features.feature_vector
+                    result_dict['lbp_entropy'] = fv.lbp_features.get('entropy', 0)
+                    result_dict['orb_count'] = fv.orb_features.get('count', 0)
+                    result_dict['orb_spread'] = fv.orb_features.get('spatial_spread', 0)
+
+                # Add learned classifier info
+                if features.learned_type:
+                    result_dict['learned_type'] = features.learned_type
+                    result_dict['learned_confidence'] = features.learned_confidence
 
                 # Add captions
                 if caption_col:
@@ -141,13 +172,14 @@ def process_full_dataset(batch_size=100, save_every=500, start_from=0):
 
     # Final save
     print(f"\n[4/4] Sauvegarde finale...")
-    print(f"Images traitées avec succès: {len(results)} / {len(df)}")
+    print(f"Images traitees avec succes: {len(results)} / {len(df)}")
     print(f"Erreurs: {len(errors)}")
 
+    results_df = None
     if len(results) > 0:
         results_df = pd.DataFrame(results)
         results_df.to_csv(output_path, index=False)
-        print(f"\n✓ Résultats sauvegardés: {output_path}")
+        print(f"\n Resultats sauvegardes: {output_path}")
 
         # Remove temp file
         if Path(temp_path).exists():
@@ -160,26 +192,26 @@ def process_full_dataset(batch_size=100, save_every=500, start_from=0):
     if len(errors) > 0:
         errors_df = pd.DataFrame(errors)
         errors_df.to_csv('outputs/results/processing_errors.csv', index=False)
-        print(f"\n⚠ Erreurs sauvegardées: outputs/results/processing_errors.csv")
+        print(f"\n Erreurs sauvegardees: outputs/results/processing_errors.csv")
 
     elapsed_total = time.time() - start_time
-    print(f"\n⏱ Temps total: {elapsed_total/60:.1f} minutes")
+    print(f"\n Temps total: {elapsed_total/60:.1f} minutes")
     print(f"   Vitesse moyenne: {len(results)/elapsed_total:.1f} images/seconde")
 
-    return results_df if len(results) > 0 else None
+    return results_df
 
 
 def save_intermediate(results, path):
-    """Sauvegarde intermédiaire"""
+    """Sauvegarde intermediaire"""
     df = pd.DataFrame(results)
     df.to_csv(path, index=False)
-    print(f"\n Sauvegarde intermédiaire: {len(results)} résultats")
+    print(f"\n Sauvegarde intermediaire: {len(results)} resultats")
 
 
 def print_summary(results_df):
-    """Affiche un résumé des résultats"""
+    """Affiche un resume des resultats"""
     print("\n" + "=" * 80)
-    print("RÉSUMÉ DU TRAITEMENT")
+    print("RESUME DU TRAITEMENT")
     print("=" * 80)
 
     # Type distribution
@@ -195,7 +227,7 @@ def print_summary(results_df):
     print(f"   Max: {results_df['type_confidence'].max() * 100:.1f}%")
 
     # Complexity
-    print(f"\n COMPLEXITÉ VISUELLE:")
+    print(f"\n COMPLEXITE VISUELLE:")
     print(f"   Moyenne: {results_df['visual_complexity'].mean():.3f}")
     print(f"   Min: {results_df['visual_complexity'].min():.3f}")
     print(f"   Max: {results_df['visual_complexity'].max():.3f}")
@@ -207,6 +239,18 @@ def print_summary(results_df):
         for layout, count in layout_counts.items():
             print(f"   {layout:20s}: {count:5d} ({count/len(results_df)*100:5.1f}%)")
 
+    # Color features
+    if 'color_num_dominant_colors' in results_df.columns:
+        print(f"\n SEGMENTATION COULEUR:")
+        print(f"   Couleurs dominantes (moy): {results_df['color_num_dominant_colors'].mean():.1f}")
+        print(f"   Balance couleur (moy): {results_df['color_color_balance'].mean():.3f}")
+
+    # Descriptor features
+    if 'orb_count' in results_df.columns:
+        print(f"\n DESCRIPTEURS VISUELS:")
+        print(f"   ORB keypoints (moy): {results_df['orb_count'].mean():.0f}")
+        print(f"   LBP entropie (moy): {results_df['lbp_entropy'].mean():.3f}")
+
     # Text density
     print(f"\n TEXT DENSITY:")
     print(f"   Moyenne: {results_df['text_density'].mean():.3f}")
@@ -216,10 +260,10 @@ def print_summary(results_df):
 
 def resume_processing(last_completed_idx):
     """
-    Reprend le traitement après interruption
+    Reprend le traitement apres interruption
 
     Args:
-        last_completed_idx: Dernier index complété avec succès
+        last_completed_idx: Dernier index complete avec succes
     """
     print(f"\n REPRISE DU TRAITEMENT depuis l'index {last_completed_idx + 1}")
     return process_full_dataset(start_from=last_completed_idx + 1)
@@ -237,23 +281,23 @@ if __name__ == "__main__":
             if Path(temp_path).exists():
                 temp_df = pd.read_csv(temp_path)
                 start_from = temp_df['image_idx'].max() + 1
-                print(f"Reprise détectée: dernier index traité = {start_from - 1}")
+                print(f"Reprise detectee: dernier index traite = {start_from - 1}")
             else:
-                print("Aucun fichier temporaire trouvé, démarrage depuis le début")
+                print("Aucun fichier temporaire trouve, demarrage depuis le debut")
         else:
             start_from = int(sys.argv[1])
 
     # Process
     results = process_full_dataset(
         batch_size=100,
-        save_every=500,  # Sauvegarde tous les 500 images
+        save_every=500,
         start_from=start_from
     )
 
     print("\n" + "=" * 80)
-    print("✓ TRAITEMENT TERMINÉ")
+    print("TRAITEMENT TERMINE")
     print("=" * 80)
-    print("\nFichiers générés:")
-    print("  • outputs/results/full_dataset_adaptive.csv")
+    print("\nFichiers generes:")
+    print("  - outputs/results/full_dataset_adaptive.csv")
     if Path('outputs/results/processing_errors.csv').exists():
-        print("  • outputs/results/processing_errors.csv")
+        print("  - outputs/results/processing_errors.csv")
